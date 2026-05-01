@@ -399,12 +399,8 @@ WriteAvroLocalState::~WriteAvroLocalState() {
 }
 
 WriteAvroGlobalState::~WriteAvroGlobalState() {
-	//! NOTE: the 'writer' and 'datum_writer' do not need to be closed, they are owned by the file_writer.
-	//! On the happy path WriteAvroFinalize has already nulled file_writer; this only runs on error paths.
-	if (file_writer) {
-		avro_file_writer_close(file_writer);
-		file_writer = nullptr;
-	}
+	//! NOTE: the 'writer' and 'datum_writer' do not need to be closed, they are owned by the file_writer
+	avro_file_writer_close(file_writer);
 }
 
 WriteAvroGlobalState::WriteAvroGlobalState(ClientContext &context, FunctionData &bind_data_p, FileSystem &fs,
@@ -642,20 +638,11 @@ static void WriteAvroCombine(ExecutionContext &context, FunctionData &bind_data,
 
 static void WriteAvroFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
 	auto &global_state = gstate.Cast<WriteAvroGlobalState>();
-
-	//! Close the avro library writer. This may flush a final block into the in-memory writer.
-	avro_file_writer_close(global_state.file_writer);
-	global_state.file_writer = nullptr;
-
-	//! Drain anything the avro library left in the in-memory writer to the underlying file handle.
-	auto written_bytes = avro_writer_tell(global_state.writer);
-	if (written_bytes > 0) {
-		global_state.WriteData(global_state.memory_buffer.GetData(), written_bytes);
-	}
-
-	//! Explicitly close the file handle. Required for stores that only commit data on Close()
-	//! (e.g. Azure DFS / OneLake, where Write() Appends staged bytes that only become visible
-	//! after Flush(Close=true)). Local file systems are unaffected.
+	//! WriteAvroSink has already flushed every block to the file handle, so there is no
+	//! more data to write here. We only need to close the handle, which is required for
+	//! stores that commit on Close() (e.g. Azure DFS / OneLake, where Write() Appends
+	//! staged bytes that only become visible after Flush(Close=true)). Local FS, S3, and
+	//! Azure Blob are unaffected because their writes commit incrementally.
 	if (global_state.handle) {
 		global_state.handle->Close();
 	}
